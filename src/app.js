@@ -42,6 +42,26 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
+// Temporary test route (DEV only)
+app.get('/api/v1/test-email', async (req, res) => {
+    console.log("process.env.EMAIL_USER", process.env.EMAIL_USER)
+    console.log("process.env.EMAIL_PASS", process.env.EMAIL_PASS)
+    const { sendEmail, emailTemplates } = require('./utils/sendEmail');
+    // console.log(process.env.)
+    try {
+        await sendEmail({
+            email: 'raorahul5631@gmail.com',
+            subject: 'Test SMTP GharSeva',
+            html: '<h1>Success!</h1><p>Your email config works.</p>'
+        });
+        res.json({ message: 'Email sent, check inbox' });
+    } catch (err) {
+        console.log(err)
+        res.status(500).json({ error: err.message, message: "email error" });
+
+    }
+});
+
 // Body Parser
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

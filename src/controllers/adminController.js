@@ -309,3 +309,11 @@ exports.moderateReview = asyncHandler(async (req, res) => {
     
     new ApiResponse(200, { review }, 'Review moderated').send(res);
 });
+
+exports.getAllProviders = asyncHandler(async (req, res) => {
+    const providers = await ServiceProvider.find()
+        .populate('user', 'firstName lastName email phone avatar')
+        .sort('-createdAt');
+
+    new ApiResponse(200, { providers }, 'All providers fetched').send(res);
+});

@@ -38,4 +38,10 @@ router.patch('/reviews/:id', adminController.moderateReview);
 // Reports
 router.get('/reports/revenue', adminController.getRevenueReport);
 
+router.get('/providers', adminController.getAllProviders);
+
+
+
+
+
 module.exports = router;
