@@ -27,6 +27,7 @@ app.use(cors({
         'http://localhost:5173',
         'http://localhost:5175',
         'http://127.0.0.1:3000',
+        'https://ghar-seva-client.vercel.app',
         process.env.FRONTEND_URL
     ].filter(Boolean),
     credentials: true,
