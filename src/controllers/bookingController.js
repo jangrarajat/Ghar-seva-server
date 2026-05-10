@@ -17,7 +17,8 @@ exports.createBooking = asyncHandler(async (req, res) => {
         scheduledTime, 
         serviceAddress, 
         payment, 
-        notes 
+        notes,
+        category            // ✅ FIX: read category from root body
     } = req.body;
 
     const provider = await ServiceProvider.findById(providerId).populate('user');
@@ -60,7 +61,7 @@ exports.createBooking = asyncHandler(async (req, res) => {
         bookingId: finalBookingId,
         customer: req.user._id,
         provider: providerId,
-        category: services[0].category,
+        category: category,            // ✅ FIX: use root category
         items: bookingItems,
         scheduledDate,
         scheduledTime,
@@ -130,7 +131,6 @@ exports.getMyBookings = asyncHandler(async (req, res) => {
         if (provider) {
             query.provider = provider._id;
         } else {
-            // Provider profile not found, return empty
             return new ApiResponse(200, { bookings: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } }, 'Bookings fetched').send(res);
         }
     }
@@ -237,7 +237,6 @@ exports.confirmBooking = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
 
-    // Authorization: only the assigned provider can confirm
     const provider = await ServiceProvider.findOne({ user: req.user._id });
     if (!provider || provider._id.toString() !== booking.provider.toString()) {
         throw new ApiError(403, 'Not authorized to confirm this booking');
@@ -363,7 +362,6 @@ exports.rescheduleBooking = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
 
-    // Only customer or provider can reschedule
     if (req.user.role === 'customer' && booking.customer.toString() !== req.user._id.toString()) {
         throw new ApiError(403, 'Not authorized');
     }

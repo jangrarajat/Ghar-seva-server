@@ -16,6 +16,7 @@ router.post(
     validate([
         body('provider').notEmpty().withMessage('Provider is required'),
         body('services').isArray().withMessage('Services must be an array'),
+        body('category').notEmpty().withMessage('Category is required'),   // ✅ Added
         body('scheduledDate').isISO8601().withMessage('Valid date is required'),
         body('scheduledTime.start').notEmpty().withMessage('Start time is required'),
         body('serviceAddress').notEmpty().withMessage('Service address is required'),
