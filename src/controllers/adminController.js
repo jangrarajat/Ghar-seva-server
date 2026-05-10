@@ -160,16 +160,27 @@ exports.verifyProvider = asyncHandler(async (req, res) => {
 // @desc    Manage categories
 // @route   POST /api/v1/admin/categories
 exports.createCategory = asyncHandler(async (req, res) => {
-    const category = await Category.create(req.body);
+    // Transform iconUrl to icon object if provided
+    let categoryData = { ...req.body };
+    if (categoryData.iconUrl) {
+        categoryData.icon = { url: categoryData.iconUrl };
+        delete categoryData.iconUrl;
+    }
+    const category = await Category.create(categoryData);
     new ApiResponse(201, { category }, 'Category created').send(res);
 });
 
 // @desc    Update category
 // @route   PUT /api/v1/admin/categories/:id
 exports.updateCategory = asyncHandler(async (req, res) => {
+    let categoryData = { ...req.body };
+    if (categoryData.iconUrl) {
+        categoryData.icon = { url: categoryData.iconUrl };
+        delete categoryData.iconUrl;
+    }
     const category = await Category.findByIdAndUpdate(
         req.params.id,
-        req.body,
+        categoryData,
         { new: true, runValidators: true }
     );
     
@@ -195,16 +206,29 @@ exports.deleteCategory = asyncHandler(async (req, res) => {
 // @desc    Manage services
 // @route   POST /api/v1/admin/services
 exports.createService = asyncHandler(async (req, res) => {
-    const service = await SubService.create(req.body);
+    let serviceData = { ...req.body };
+    // Transform imageUrls (comma-separated string) to images array
+    if (serviceData.imageUrls) {
+        const urls = serviceData.imageUrls.split(',').map(url => url.trim()).filter(url => url);
+        serviceData.images = urls.map(url => ({ url, caption: '' }));
+        delete serviceData.imageUrls;
+    }
+    const service = await SubService.create(serviceData);
     new ApiResponse(201, { service }, 'Service created').send(res);
 });
 
 // @desc    Update service
 // @route   PUT /api/v1/admin/services/:id
 exports.updateService = asyncHandler(async (req, res) => {
+    let serviceData = { ...req.body };
+    if (serviceData.imageUrls) {
+        const urls = serviceData.imageUrls.split(',').map(url => url.trim()).filter(url => url);
+        serviceData.images = urls.map(url => ({ url, caption: '' }));
+        delete serviceData.imageUrls;
+    }
     const service = await SubService.findByIdAndUpdate(
         req.params.id,
-        req.body,
+        serviceData,
         { new: true, runValidators: true }
     );
     
