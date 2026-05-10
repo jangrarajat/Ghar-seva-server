@@ -1,3 +1,4 @@
+// controllers/providerController.js
 const ServiceProvider = require('../models/ServiceProvider');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
@@ -7,7 +8,6 @@ const asyncHandler = require('../utils/asyncHandler');
 // @desc    Register as service provider
 // @route   POST /api/v1/providers/register
 exports.registerProvider = asyncHandler(async (req, res) => {
-    // Check if already registered
     const existingProvider = await ServiceProvider.findOne({ user: req.user._id });
     if (existingProvider) {
         throw new ApiError(400, 'You are already registered as a service provider');
@@ -21,7 +21,6 @@ exports.registerProvider = asyncHandler(async (req, res) => {
     
     const provider = await ServiceProvider.create(providerData);
     
-    // Update user role
     await User.findByIdAndUpdate(req.user._id, { role: 'provider' });
     
     new ApiResponse(201, { provider }, 'Provider registration submitted for verification').send(res);
@@ -78,7 +77,6 @@ exports.addService = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Provider profile not found');
     }
     
-    // Check if service already exists
     const existingService = provider.services.find(
         s => s.category.toString() === req.body.category
     );
@@ -192,14 +190,12 @@ exports.getStats = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Provider profile not found');
     }
     
-    // Get recent bookings
     const Booking = require('../models/Booking');
     const recentBookings = await Booking.find({ provider: provider._id })
         .sort('-createdAt')
         .limit(5)
         .select('bookingId status scheduledDate pricing.total');
     
-    // Get earnings summary
     const earningsSummary = await Booking.aggregate([
         {
             $match: {
@@ -238,7 +234,6 @@ exports.getPublicProfile = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Provider not found');
     }
     
-    // Get reviews
     const Review = require('../models/Review');
     const reviews = await Review.find({
         provider: provider._id,
@@ -251,41 +246,80 @@ exports.getPublicProfile = asyncHandler(async (req, res) => {
     new ApiResponse(200, { provider, reviews }, 'Provider profile fetched').send(res);
 });
 
-// @desc    Search providers by location
+// @desc    Search providers by location, pincode, city, or coordinates with radius
 // @route   GET /api/v1/providers/search
 exports.searchProviders = asyncHandler(async (req, res) => {
-    const { latitude, longitude, radius = 10, service, page = 1, limit = 10 } = req.query;
-    
+    const { 
+        latitude, 
+        longitude, 
+        radius = 10,      // in km (used only with coordinates)
+        service, 
+        pincode, 
+        city,
+        page = 1, 
+        limit = 10 
+    } = req.query;
+
     const query = {
         verificationStatus: 'verified',
         isAvailable: true
     };
-    
+
+    // Filter by service category
     if (service) {
         query['services.category'] = service;
     }
-    
+
+    // Determine location filter – priority: coordinates > pincode > city
+    let locationFilter = {};
+
+    // Priority 1: If coordinates are provided, use geo‑proximity within radius
     if (latitude && longitude) {
-        query.serviceArea = {
-            $nearSphere: {
-                $geometry: {
-                    type: 'Point',
-                    coordinates: [parseFloat(longitude), parseFloat(latitude)]
-                },
-                $maxDistance: parseFloat(radius) * 1000 // Convert km to meters
+        const lat = parseFloat(latitude);
+        const lng = parseFloat(longitude);
+        const maxDistance = parseFloat(radius) * 1000; // km → meters
+
+        locationFilter = {
+            serviceArea: {
+                $nearSphere: {
+                    $geometry: {
+                        type: 'Point',
+                        coordinates: [lng, lat]
+                    },
+                    $maxDistance: maxDistance
+                }
             }
         };
+    } 
+    // Priority 2: If pincode is provided, match against serviceArea.pincodes array
+    else if (pincode) {
+        query['serviceArea.pincodes'] = pincode;
     }
-    
+    // Priority 3: If city is provided, match against serviceArea.cities (case‑insensitive)
+    else if (city) {
+        query['serviceArea.cities'] = { $regex: new RegExp(`^${city}$`, 'i') };
+    }
+
+    // Merge location filter
+    Object.assign(query, locationFilter);
+
+    // If no location criteria at all, return empty (or you could remove this line to return all)
+    if (!latitude && !longitude && !pincode && !city) {
+        return new ApiResponse(200, {
+            providers: [],
+            pagination: { page: 1, limit, total: 0, pages: 0 }
+        }, 'No location criteria provided').send(res);
+    }
+
     const providers = await ServiceProvider.find(query)
         .populate('user', 'firstName lastName avatar')
         .populate('services.category', 'name slug')
         .sort('-rating.average')
         .skip((page - 1) * limit)
         .limit(parseInt(limit));
-    
+
     const total = await ServiceProvider.countDocuments(query);
-    
+
     new ApiResponse(200, {
         providers,
         pagination: {
@@ -295,4 +329,28 @@ exports.searchProviders = asyncHandler(async (req, res) => {
             pages: Math.ceil(total / limit)
         }
     }, 'Providers fetched').send(res);
+});
+
+// @desc    Get provider notifications
+// @route   GET /api/v1/providers/notifications
+exports.getNotifications = asyncHandler(async (req, res) => {
+    const Notification = require('../models/Notification');
+    const notifications = await Notification.find({ recipient: req.user._id })
+        .sort('-createdAt')
+        .limit(50);
+    const unreadCount = await Notification.countDocuments({ recipient: req.user._id, isRead: false });
+    new ApiResponse(200, { notifications, unreadCount }, 'Notifications fetched').send(res);
+});
+
+// @desc    Mark notification as read
+// @route   PATCH /api/v1/providers/notifications/:id/read
+exports.markNotificationRead = asyncHandler(async (req, res) => {
+    const Notification = require('../models/Notification');
+    const notification = await Notification.findOneAndUpdate(
+        { _id: req.params.id, recipient: req.user._id },
+        { isRead: true, readAt: new Date() },
+        { new: true }
+    );
+    if (!notification) throw new ApiError(404, 'Notification not found');
+    new ApiResponse(200, { notification }, 'Marked as read').send(res);
 });

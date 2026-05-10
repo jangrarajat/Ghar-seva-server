@@ -9,7 +9,6 @@ const { sendEmail, emailTemplates } = require('../utils/sendEmail');
 // @desc    Create new booking
 // @route   POST /api/v1/bookings
 exports.createBooking = asyncHandler(async (req, res) => {
-    // 1. Request body se saara data nikaalein (including bookingId)[cite: 2]
     const { 
         bookingId, 
         provider: providerId, 
@@ -21,13 +20,11 @@ exports.createBooking = asyncHandler(async (req, res) => {
         notes 
     } = req.body;
 
-    // 2. Validate provider exists and is active[cite: 2]
     const provider = await ServiceProvider.findById(providerId).populate('user');
     if (!provider || !provider.isAvailable) {
         throw new ApiError(400, 'Service provider is not available');
     }
 
-    // 3. Pricing calculation logic[cite: 2]
     let subtotal = 0;
     const bookingItems = [];
 
@@ -52,19 +49,15 @@ exports.createBooking = asyncHandler(async (req, res) => {
         subtotal += totalPrice;
     }
 
-    // 4. Taxes and convenience fee[cite: 2]
     const gst = subtotal * 0.09; 
     const sgst = subtotal * 0.09; 
     const convenienceFee = subtotal * 0.05; 
     const total = subtotal + gst + sgst + convenienceFee;
 
-    // 5. Booking ID handle karein (Required field fix)[cite: 2]
-    // Agar frontend se nahi aaya toh random generate karein taaki schema fail na ho
     const finalBookingId = bookingId || `BK-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    // 6. Create booking entry in Database[cite: 2]
     const booking = await Booking.create({
-        bookingId: finalBookingId, // Mapping the ID correctly[cite: 2]
+        bookingId: finalBookingId,
         customer: req.user._id,
         provider: providerId,
         category: services[0].category,
@@ -83,12 +76,11 @@ exports.createBooking = asyncHandler(async (req, res) => {
         },
         payment: {
             method: payment.method,
-            status: 'pending' // Default status[cite: 2]
+            status: 'pending'
         },
         customerNotes: notes
     });
 
-    // 7. Initial timeline status[cite: 2]
     booking.timeline.push({
         status: 'pending',
         note: 'Booking created',
@@ -96,7 +88,7 @@ exports.createBooking = asyncHandler(async (req, res) => {
     });
     await booking.save();
 
-    // 8. Confirmation Email[cite: 2]
+    // Send confirmation email to customer
     try {
         await sendEmail({
             email: req.user.email,
@@ -107,10 +99,26 @@ exports.createBooking = asyncHandler(async (req, res) => {
         console.error('Failed to send booking confirmation email:', error);
     }
 
+    // Create notification for provider
+    try {
+        const Notification = require('../models/Notification');
+        await Notification.create({
+            recipient: provider.user._id,
+            type: 'booking_created',
+            title: 'New Booking Received',
+            message: `New booking ${booking.bookingId} from ${req.user.firstName} ${req.user.lastName}`,
+            reference: { model: 'Booking', id: booking._id },
+            channels: { inApp: true, email: true }
+        });
+    } catch (notifErr) {
+        console.error('Failed to create provider notification:', notifErr);
+    }
+
     new ApiResponse(201, { booking }, 'Booking created successfully').send(res);
 });
 
-// @desc    Get all bookings for logged in user[cite: 2]
+// @desc    Get all bookings for logged in user (customer or provider)
+// @route   GET /api/v1/bookings/my-bookings
 exports.getMyBookings = asyncHandler(async (req, res) => {
     const { status, page = 1, limit = 10 } = req.query;
     const query = {};
@@ -121,13 +129,16 @@ exports.getMyBookings = asyncHandler(async (req, res) => {
         const provider = await ServiceProvider.findOne({ user: req.user._id });
         if (provider) {
             query.provider = provider._id;
+        } else {
+            // Provider profile not found, return empty
+            return new ApiResponse(200, { bookings: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } }, 'Bookings fetched').send(res);
         }
     }
 
     if (status) query.status = status;
 
     const bookings = await Booking.find(query)
-        .populate('customer', 'firstName lastName phone')
+        .populate('customer', 'firstName lastName phone email')
         .populate('provider', 'businessName rating')
         .populate('items.service', 'name')
         .sort('-createdAt')
@@ -147,7 +158,8 @@ exports.getMyBookings = asyncHandler(async (req, res) => {
     }, 'Bookings fetched successfully').send(res);
 });
 
-// @desc    Get single booking[cite: 2]
+// @desc    Get single booking
+// @route   GET /api/v1/bookings/:id
 exports.getBookingById = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id)
         .populate('customer', 'firstName lastName phone email')
@@ -159,11 +171,18 @@ exports.getBookingById = asyncHandler(async (req, res) => {
     if (req.user.role === 'customer' && booking.customer._id.toString() !== req.user._id.toString()) {
         throw new ApiError(403, 'Not authorized to view this booking');
     }
+    if (req.user.role === 'provider') {
+        const provider = await ServiceProvider.findOne({ user: req.user._id });
+        if (!provider || provider._id.toString() !== booking.provider._id.toString()) {
+            throw new ApiError(403, 'Not authorized to view this booking');
+        }
+    }
 
     new ApiResponse(200, { booking }, 'Booking fetched successfully').send(res);
 });
 
-// @desc    Cancel booking[cite: 2]
+// @desc    Cancel booking
+// @route   PATCH /api/v1/bookings/:id/cancel
 exports.cancelBooking = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
@@ -190,13 +209,39 @@ exports.cancelBooking = asyncHandler(async (req, res) => {
     });
 
     await booking.save();
+
+    // Notify provider about cancellation
+    try {
+        const provider = await ServiceProvider.findById(booking.provider);
+        if (provider) {
+            const Notification = require('../models/Notification');
+            await Notification.create({
+                recipient: provider.user,
+                type: 'booking_cancelled',
+                title: 'Booking Cancelled',
+                message: `Booking ${booking.bookingId} was cancelled by ${req.user.role}`,
+                reference: { model: 'Booking', id: booking._id },
+                channels: { inApp: true }
+            });
+        }
+    } catch (err) {
+        console.error('Failed to send cancellation notification', err);
+    }
+
     new ApiResponse(200, { booking }, 'Booking cancelled successfully').send(res);
 });
 
-// @desc    Confirm booking (Provider)[cite: 2]
+// @desc    Confirm booking (Provider)
+// @route   PATCH /api/v1/bookings/:id/confirm
 exports.confirmBooking = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
+
+    // Authorization: only the assigned provider can confirm
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
+    if (!provider || provider._id.toString() !== booking.provider.toString()) {
+        throw new ApiError(403, 'Not authorized to confirm this booking');
+    }
 
     if (booking.status !== 'pending') {
         throw new ApiError(400, 'Can only confirm pending bookings');
@@ -210,13 +255,20 @@ exports.confirmBooking = asyncHandler(async (req, res) => {
     });
 
     await booking.save();
+
     new ApiResponse(200, { booking }, 'Booking confirmed successfully').send(res);
 });
 
-// @desc    Start service (Provider)[cite: 2]
+// @desc    Start service (Provider)
+// @route   PATCH /api/v1/bookings/:id/start
 exports.startService = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
+
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
+    if (!provider || provider._id.toString() !== booking.provider.toString()) {
+        throw new ApiError(403, 'Not authorized to start this booking');
+    }
 
     if (booking.status !== 'confirmed') {
         throw new ApiError(400, 'Can only start confirmed bookings');
@@ -231,13 +283,20 @@ exports.startService = asyncHandler(async (req, res) => {
     });
 
     await booking.save();
+
     new ApiResponse(200, { booking }, 'Service started').send(res);
 });
 
-// @desc    Generate completion OTP[cite: 2]
+// @desc    Generate completion OTP (Provider)
+// @route   POST /api/v1/bookings/:id/generate-otp
 exports.generateCompletionOTP = asyncHandler(async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
+
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
+    if (!provider || provider._id.toString() !== booking.provider.toString()) {
+        throw new ApiError(403, 'Not authorized to generate OTP for this booking');
+    }
 
     if (booking.status !== 'in_progress') {
         throw new ApiError(400, 'Can only generate OTP for in-progress bookings');
@@ -251,14 +310,21 @@ exports.generateCompletionOTP = asyncHandler(async (req, res) => {
     };
 
     await booking.save();
+
     new ApiResponse(200, { message: 'OTP generated', otp }, 'OTP generated').send(res);
 });
 
-// @desc    Complete service with OTP[cite: 2]
+// @desc    Complete service with OTP (Provider)
+// @route   PATCH /api/v1/bookings/:id/complete
 exports.completeService = asyncHandler(async (req, res) => {
     const { completionOTP } = req.body;
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
+
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
+    if (!provider || provider._id.toString() !== booking.provider.toString()) {
+        throw new ApiError(403, 'Not authorized to complete this booking');
+    }
 
     if (booking.status !== 'in_progress') {
         throw new ApiError(400, 'Can only complete in-progress bookings');
@@ -290,11 +356,23 @@ exports.completeService = asyncHandler(async (req, res) => {
     new ApiResponse(200, { booking }, 'Service completed').send(res);
 });
 
-// @desc    Reschedule booking[cite: 2]
+// @desc    Reschedule booking
+// @route   PATCH /api/v1/bookings/:id/reschedule
 exports.rescheduleBooking = asyncHandler(async (req, res) => {
     const { scheduledDate, scheduledTime } = req.body;
     const booking = await Booking.findById(req.params.id);
     if (!booking) throw new ApiError(404, 'Booking not found');
+
+    // Only customer or provider can reschedule
+    if (req.user.role === 'customer' && booking.customer.toString() !== req.user._id.toString()) {
+        throw new ApiError(403, 'Not authorized');
+    }
+    if (req.user.role === 'provider') {
+        const provider = await ServiceProvider.findOne({ user: req.user._id });
+        if (!provider || provider._id.toString() !== booking.provider.toString()) {
+            throw new ApiError(403, 'Not authorized');
+        }
+    }
 
     booking.scheduledDate = scheduledDate;
     booking.scheduledTime = scheduledTime;
@@ -306,5 +384,6 @@ exports.rescheduleBooking = asyncHandler(async (req, res) => {
     });
 
     await booking.save();
+
     new ApiResponse(200, { booking }, 'Booking rescheduled').send(res);
 });
