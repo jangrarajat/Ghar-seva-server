@@ -8,7 +8,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const cookieOptions = {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: 'None',
 };
 
 // @desc    Register user directly
