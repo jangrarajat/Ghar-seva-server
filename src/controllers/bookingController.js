@@ -18,7 +18,7 @@ exports.createBooking = asyncHandler(async (req, res) => {
         serviceAddress, 
         payment, 
         notes,
-        category            // ✅ FIX: read category from root body
+        category
     } = req.body;
 
     const provider = await ServiceProvider.findById(providerId).populate('user');
@@ -61,7 +61,7 @@ exports.createBooking = asyncHandler(async (req, res) => {
         bookingId: finalBookingId,
         customer: req.user._id,
         provider: providerId,
-        category: category,            // ✅ FIX: use root category
+        category: category,
         items: bookingItems,
         scheduledDate,
         scheduledTime,
@@ -286,10 +286,12 @@ exports.startService = asyncHandler(async (req, res) => {
     new ApiResponse(200, { booking }, 'Service started').send(res);
 });
 
-// @desc    Generate completion OTP (Provider)
+// @desc    Generate completion OTP (Provider) -> Sends OTP to customer email
 // @route   POST /api/v1/bookings/:id/generate-otp
 exports.generateCompletionOTP = asyncHandler(async (req, res) => {
-    const booking = await Booking.findById(req.params.id);
+    const booking = await Booking.findById(req.params.id)
+        .populate('customer', 'email firstName lastName');
+
     if (!booking) throw new ApiError(404, 'Booking not found');
 
     const provider = await ServiceProvider.findOne({ user: req.user._id });
@@ -304,13 +306,62 @@ exports.generateCompletionOTP = asyncHandler(async (req, res) => {
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
     booking.otp = {
         code: otp,
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000), 
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
         verified: false
     };
 
     await booking.save();
 
-    new ApiResponse(200, { message: 'OTP generated', otp }, 'OTP generated').send(res);
+    // Send OTP to customer's email
+    try {
+        const customerEmail = booking.customer.email;
+        const customerName = `${booking.customer.firstName} ${booking.customer.lastName}`;
+        
+        const emailHtml = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <title>Service Completion OTP</title>
+                <style>
+                    body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
+                    .container { max-width: 500px; margin: 0 auto; background: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    .otp-code { font-size: 42px; font-weight: bold; letter-spacing: 5px; background: #eef2ff; display: inline-block; padding: 12px 24px; border-radius: 8px; margin: 20px 0; }
+                    .footer { margin-top: 20px; font-size: 12px; color: #888; text-align: center; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h2>Hello ${customerName},</h2>
+                    <p>Your service provider has requested completion of your booking <strong>${booking.bookingId}</strong>.</p>
+                    <p>Please share the following OTP with the provider to complete the service:</p>
+                    <div style="text-align: center;">
+                        <div class="otp-code">${otp}</div>
+                    </div>
+                    <p>This OTP is valid for <strong>30 minutes</strong>.</p>
+                    <p>If you did not request this, please ignore this email.</p>
+                    <div class="footer">
+                        <p>GharSeva - Your trusted home service partner</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+
+        await sendEmail({
+            email: customerEmail,
+            subject: `Service Completion OTP for Booking ${booking.bookingId}`,
+            html: emailHtml
+        });
+
+        console.log(`OTP email sent to ${customerEmail}`);
+    } catch (emailErr) {
+        console.error('Failed to send OTP email:', emailErr);
+        // We don't throw an error to the provider if email fails, but we log it.
+        // The provider still sees the OTP in the modal (fallback)
+    }
+
+    new ApiResponse(200, { message: 'OTP generated and sent to customer email', otp }, 'OTP generated').send(res);
 });
 
 // @desc    Complete service with OTP (Provider)
