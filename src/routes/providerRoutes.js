@@ -1,5 +1,6 @@
 const express = require('express');
 const providerController = require('../controllers/providerController');
+const withdrawalController = require('../controllers/withdrawalController');
 const { protect, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const { body } = require('express-validator');
@@ -34,5 +35,9 @@ router.put('/bank-details', authorize('provider'), providerController.updateBank
 // Notifications for provider
 router.get('/notifications', authorize('provider'), providerController.getNotifications);
 router.patch('/notifications/:id/read', authorize('provider'), providerController.markNotificationRead);
+
+// ========== WITHDRAWAL REQUESTS ==========
+router.post('/withdrawals/request', authorize('provider'), withdrawalController.requestWithdrawal);
+router.get('/withdrawals/my', authorize('provider'), withdrawalController.getMyWithdrawals);
 
 module.exports = router;

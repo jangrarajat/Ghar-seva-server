@@ -5,6 +5,7 @@ const Category = require('../models/Category');
 const SubService = require('../models/SubService');
 const Review = require('../models/Review');
 const Payment = require('../models/Payment');
+const Settings = require('../models/Settings');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -160,7 +161,6 @@ exports.verifyProvider = asyncHandler(async (req, res) => {
 // @desc    Manage categories
 // @route   POST /api/v1/admin/categories
 exports.createCategory = asyncHandler(async (req, res) => {
-    // Transform iconUrl to icon object if provided
     let categoryData = { ...req.body };
     if (categoryData.iconUrl) {
         categoryData.icon = { url: categoryData.iconUrl };
@@ -207,7 +207,6 @@ exports.deleteCategory = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/admin/services
 exports.createService = asyncHandler(async (req, res) => {
     let serviceData = { ...req.body };
-    // Transform imageUrls (comma-separated string) to images array
     if (serviceData.imageUrls) {
         const urls = serviceData.imageUrls.split(',').map(url => url.trim()).filter(url => url);
         serviceData.images = urls.map(url => ({ url, caption: '' }));
@@ -280,15 +279,9 @@ exports.getAllBookings = asyncHandler(async (req, res) => {
 exports.getRevenueReport = asyncHandler(async (req, res) => {
     const { startDate, endDate } = req.query;
     
-    const match = {
-        status: 'paid'
-    };
-    
+    const match = { status: 'paid' };
     if (startDate && endDate) {
-        match.createdAt = {
-            $gte: new Date(startDate),
-            $lte: new Date(endDate)
-        };
+        match.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
     
     const revenueData = await Payment.aggregate([
@@ -317,27 +310,45 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
 // @route   PATCH /api/v1/admin/reviews/:id
 exports.moderateReview = asyncHandler(async (req, res) => {
     const { status, note } = req.body;
-    
     const review = await Review.findByIdAndUpdate(
         req.params.id,
-        {
-            status,
-            moderationNote: note
-        },
+        { status, moderationNote: note },
         { new: true }
     );
-    
-    if (!review) {
-        throw new ApiError(404, 'Review not found');
-    }
-    
+    if (!review) throw new ApiError(404, 'Review not found');
     new ApiResponse(200, { review }, 'Review moderated').send(res);
 });
 
+// @desc    Get all providers
+// @route   GET /api/v1/admin/providers
 exports.getAllProviders = asyncHandler(async (req, res) => {
     const providers = await ServiceProvider.find()
         .populate('user', 'firstName lastName email phone avatar')
         .sort('-createdAt');
-
     new ApiResponse(200, { providers }, 'All providers fetched').send(res);
+});
+
+// ========== COMMISSION SETTINGS ==========
+
+// @desc    Get current commission percentage
+// @route   GET /api/v1/admin/settings/commission
+exports.getCommission = asyncHandler(async (req, res) => {
+    const setting = await Settings.findOne({ key: 'commission' });
+    const commission = setting ? setting.value : 20;
+    new ApiResponse(200, { commission }, 'Commission fetched').send(res);
+});
+
+// @desc    Update commission percentage
+// @route   PUT /api/v1/admin/settings/commission
+exports.updateCommission = asyncHandler(async (req, res) => {
+    const { commissionPercentage } = req.body;
+    if (typeof commissionPercentage !== 'number' || commissionPercentage < 0 || commissionPercentage > 100) {
+        throw new ApiError(400, 'Commission must be a number between 0 and 100');
+    }
+    await Settings.findOneAndUpdate(
+        { key: 'commission' },
+        { key: 'commission', value: commissionPercentage },
+        { upsert: true, new: true }
+    );
+    new ApiResponse(200, null, 'Commission updated').send(res);
 });

@@ -1,5 +1,6 @@
 const express = require('express');
 const adminController = require('../controllers/adminController');
+const withdrawalController = require('../controllers/withdrawalController');
 const { protect, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -40,8 +41,13 @@ router.get('/reports/revenue', adminController.getRevenueReport);
 
 router.get('/providers', adminController.getAllProviders);
 
+// ========== COMMISSION SETTINGS ==========
+router.get('/settings/commission', adminController.getCommission);
+router.put('/settings/commission', adminController.updateCommission);
 
-
-
+// ========== WITHDRAWAL MANAGEMENT ==========
+router.get('/withdrawals', withdrawalController.getAllWithdrawalRequests);
+router.patch('/withdrawals/:id/approve', withdrawalController.approveWithdrawal);
+router.patch('/withdrawals/:id/reject', withdrawalController.rejectWithdrawal);
 
 module.exports = router;
