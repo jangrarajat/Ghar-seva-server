@@ -15,9 +15,12 @@ const serviceRoutes = require('./routes/serviceRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const paymentRoutes = require('./routes/paymentRoutes'); // ✅ Added payment routes
+const paymentController = require('./controllers/paymentController'); // ✅ For webhook
 
 const app = express();
 app.set('trust proxy', 1);
+
 // Security Middleware
 app.use(helmet());
 app.use(cors({
@@ -48,7 +51,6 @@ app.get('/api/v1/test-email', async (req, res) => {
     console.log("process.env.EMAIL_USER", process.env.EMAIL_USER)
     console.log("process.env.EMAIL_PASS", process.env.EMAIL_PASS)
     const { sendEmail, emailTemplates } = require('./utils/sendEmail');
-    // console.log(process.env.)
     try {
         await sendEmail({
             email: 'raorahul5631@gmail.com',
@@ -59,11 +61,13 @@ app.get('/api/v1/test-email', async (req, res) => {
     } catch (err) {
         console.log(err)
         res.status(500).json({ error: err.message, message: "email error" });
-
     }
 });
 
-// Body Parser
+// ✅ IMPORTANT: Webhook must be BEFORE express.json() middleware
+app.post('/api/v1/payments/webhook', express.raw({ type: 'application/json' }), paymentController.webhook);
+
+// Body Parser (after webhook)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
@@ -90,6 +94,7 @@ app.use('/api/v1/services', serviceRoutes);
 app.use('/api/v1/bookings', bookingRoutes);
 app.use('/api/v1/reviews', reviewRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/payments', paymentRoutes); // ✅ Added payment routes
 
 // 404 Handler
 app.use((req, res, next) => {
