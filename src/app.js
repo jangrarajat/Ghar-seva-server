@@ -7,7 +7,7 @@ const rateLimit = require('express-rate-limit');
 const errorHandler = require('./middleware/errorHandler');
 const ApiError = require('./utils/ApiError');
 
-// ✅ Ensure dotenv is loaded (already loaded in server.js, but safe to have)
+// ✅ Ensure dotenv is loaded
 require('dotenv').config({ override: true });
 
 // Import Routes
@@ -24,28 +24,96 @@ const paymentController = require('./controllers/paymentController');
 const app = express();
 app.set('trust proxy', 1);
 
-// Security Middleware
-app.use(helmet());
+// ✅ Helper function to get local network IPs dynamically
+const getLocalNetworkIPs = () => {
+    const { networkInterfaces } = require('os');
+    const nets = networkInterfaces();
+    const ips = [];
+    
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+            if (net.family === 'IPv4' && !net.internal) {
+                ips.push(`http://${net.address}:5173`);
+                ips.push(`http://${net.address}:5174`);
+                ips.push(`http://${net.address}:5175`);
+                ips.push(`http://${net.address}:5500`);
+            }
+        }
+    }
+    return ips;
+};
+
+// ✅ Updated CORS configuration - Allow all network devices
+const allowedOrigins = [
+    'http://localhost:5500',
+    'http://127.0.0.1:5500',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:5175',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+    'https://ghar-seva-client.vercel.app',
+    process.env.FRONTEND_URL,
+    // ✅ Add all local network IPs dynamically
+    ...getLocalNetworkIPs(),
+    // ✅ Allow any local network IP (development only)
+    /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:\d{4}$/,
+    /^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{4}$/,
+    /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}:\d{4}$/,
+].filter(Boolean);
+
+console.log('✅ CORS Allowed Origins:', allowedOrigins.filter(o => typeof o === 'string').length + ' patterns');
+
+// Security Middleware - CORS with dynamic origin
 app.use(cors({
-    origin: [
-        'http://localhost:5500',
-        'http://127.0.0.1:5500',
-        'http://localhost:5173',
-        'http://localhost:5175',
-        'http://127.0.0.1:3000',
-        'https://ghar-seva-client.vercel.app',
-        process.env.FRONTEND_URL
-    ].filter(Boolean),
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, Postman, curl)
+        if (!origin) {
+            return callback(null, true);
+        }
+        
+        // Check if origin is allowed
+        let isAllowed = false;
+        
+        for (const allowed of allowedOrigins) {
+            if (allowed instanceof RegExp) {
+                if (allowed.test(origin)) {
+                    isAllowed = true;
+                    break;
+                }
+            } else if (allowed === origin) {
+                isAllowed = true;
+                break;
+            }
+        }
+        
+        // In development, allow any origin but log it
+        if (process.env.NODE_ENV === 'development') {
+            if (!isAllowed) {
+                console.log(`⚠️ CORS: Allowing development origin: ${origin}`);
+            }
+            return callback(null, true);
+        }
+        
+        if (isAllowed) {
+            callback(null, true);
+        } else {
+            console.warn(`❌ CORS blocked origin: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With', 'Accept'],
+    exposedHeaders: ['Set-Cookie'],
+    optionsSuccessStatus: 200
 }));
 
-// Rate Limiting - Disabled in development, high limit in production
+// Rate Limiting - Disabled in development
 const isDevelopment = process.env.NODE_ENV === 'development';
 const limiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: isDevelopment ? 1000 : 100, // 1000 requests per minute in dev, 100 in production
+    windowMs: 1 * 60 * 1000,
+    max: isDevelopment ? 1000 : 100,
     message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api', limiter);
@@ -69,7 +137,8 @@ app.get('/api/health', (req, res) => {
         status: 'success',
         message: 'Ghar Seva API is running',
         timestamp: new Date().toISOString(),
-        razorpayConfigured: !!process.env.RAZORPAY_KEY_ID && !!process.env.RAZORPAY_KEY_SECRET
+        razorpayConfigured: !!process.env.RAZORPAY_KEY_ID && !!process.env.RAZORPAY_KEY_SECRET,
+        corsAllowed: true
     });
 });
 
@@ -81,7 +150,9 @@ if (process.env.NODE_ENV === 'development') {
             razorpay_secret_exists: !!process.env.RAZORPAY_KEY_SECRET,
             razorpay_key_prefix: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.substring(0, 10) + '...' : null,
             node_env: process.env.NODE_ENV,
-            mongodb_connected: true
+            mongodb_connected: true,
+            client_ip: req.ip,
+            client_origin: req.headers.origin
         });
     });
 }

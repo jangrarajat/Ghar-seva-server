@@ -13,6 +13,21 @@ const app = require('./src/app');
 const connectDB = require('./src/config/database');
 // const redisClient = require('./src/config/redis'); // ✅ COMMENT KARO
 
+// ✅ Helper function to get local IP address
+function getLocalIp() {
+    const { networkInterfaces } = require('os');
+    const nets = networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+            // Skip internal (localhost) and non-IPv4
+            if (net.family === 'IPv4' && !net.internal) {
+                return net.address;
+            }
+        }
+    }
+    return 'localhost';
+}
+
 // Handle Uncaught exceptions
 process.on('uncaughtException', (err) => {
     console.error(`UNCAUGHT EXCEPTION! 💥 Shutting down...`);
@@ -31,10 +46,16 @@ const startServer = async () => {
         // console.log('🔴 Redis Connected Successfully');
 
         const PORT = process.env.PORT || 5000;
-        const server = app.listen(PORT, () => {
-            console.log(`\n🚀 Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+        const localIp = getLocalIp();
+        
+        // ✅ Bind to '0.0.0.0' to accept connections from any network device
+        const server = app.listen(PORT, '0.0.0.0', () => {
+            console.log(`\n🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`);
+            console.log(`📍 Local: http://localhost:${PORT}`);
+            console.log(`📍 Network: http://${localIp}:${PORT}`);
             console.log(`📍 API URL: http://localhost:${PORT}/api/v1`);
             console.log(`💚 Health Check: http://localhost:${PORT}/api/health\n`);
+            console.log(`📱 To connect from other devices, use: http://${localIp}:${PORT}`);
         });
 
         // Handle unhandled promise rejections
