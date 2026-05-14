@@ -7,6 +7,9 @@ const rateLimit = require('express-rate-limit');
 const errorHandler = require('./middleware/errorHandler');
 const ApiError = require('./utils/ApiError');
 
+// ✅ Ensure dotenv is loaded (already loaded in server.js, but safe to have)
+require('dotenv').config({ override: true });
+
 // Import Routes
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -15,8 +18,8 @@ const serviceRoutes = require('./routes/serviceRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
 const adminRoutes = require('./routes/adminRoutes');
-const paymentRoutes = require('./routes/paymentRoutes'); // ✅ Added payment routes
-const paymentController = require('./controllers/paymentController'); // ✅ For webhook
+const paymentRoutes = require('./routes/paymentRoutes');
+const paymentController = require('./controllers/paymentController');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -38,36 +41,19 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
 }));
 
-// Rate Limiting
+// Rate Limiting - Disabled in development, high limit in production
+const isDevelopment = process.env.NODE_ENV === 'development';
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: isDevelopment ? 1000 : 100, // 1000 requests per minute in dev, 100 in production
     message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api', limiter);
 
-// Temporary test route (DEV only)
-app.get('/api/v1/test-email', async (req, res) => {
-    console.log("process.env.EMAIL_USER", process.env.EMAIL_USER)
-    console.log("process.env.EMAIL_PASS", process.env.EMAIL_PASS)
-    const { sendEmail, emailTemplates } = require('./utils/sendEmail');
-    try {
-        await sendEmail({
-            email: 'raorahul5631@gmail.com',
-            subject: 'Test SMTP GharSeva',
-            html: '<h1>Success!</h1><p>Your email config works.</p>'
-        });
-        res.json({ message: 'Email sent, check inbox' });
-    } catch (err) {
-        console.log(err)
-        res.status(500).json({ error: err.message, message: "email error" });
-    }
-});
-
-// ✅ IMPORTANT: Webhook must be BEFORE express.json() middleware
+// IMPORTANT: Webhook must be BEFORE express.json() middleware
 app.post('/api/v1/payments/webhook', express.raw({ type: 'application/json' }), paymentController.webhook);
 
-// Body Parser (after webhook)
+// Body Parser
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
@@ -82,9 +68,23 @@ app.get('/api/health', (req, res) => {
     res.status(200).json({
         status: 'success',
         message: 'Ghar Seva API is running',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        razorpayConfigured: !!process.env.RAZORPAY_KEY_ID && !!process.env.RAZORPAY_KEY_SECRET
     });
 });
+
+// Debug route to check env variables (remove in production)
+if (process.env.NODE_ENV === 'development') {
+    app.get('/api/v1/debug/env', (req, res) => {
+        res.json({
+            razorpay_key_exists: !!process.env.RAZORPAY_KEY_ID,
+            razorpay_secret_exists: !!process.env.RAZORPAY_KEY_SECRET,
+            razorpay_key_prefix: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.substring(0, 10) + '...' : null,
+            node_env: process.env.NODE_ENV,
+            mongodb_connected: true
+        });
+    });
+}
 
 // Mount Routes
 app.use('/api/v1/auth', authRoutes);
@@ -94,7 +94,7 @@ app.use('/api/v1/services', serviceRoutes);
 app.use('/api/v1/bookings', bookingRoutes);
 app.use('/api/v1/reviews', reviewRoutes);
 app.use('/api/v1/admin', adminRoutes);
-app.use('/api/v1/payments', paymentRoutes); // ✅ Added payment routes
+app.use('/api/v1/payments', paymentRoutes);
 
 // 404 Handler
 app.use((req, res, next) => {

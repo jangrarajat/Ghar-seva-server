@@ -34,8 +34,8 @@ const paymentSchema = new mongoose.Schema({
   },
   method: {
     type: String,
-    enum: ['upi', 'card', 'netbanking', 'wallet', 'cod', 'other'],
-    default: 'other'
+    enum: ['online', 'upi', 'card', 'netbanking', 'wallet', 'cod', 'other'],  // ✅ 'online' ADDED
+    default: 'online'  // ✅ Default changed to 'online'
   },
   refund: {
     refundId: String,

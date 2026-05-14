@@ -10,18 +10,25 @@ const asyncHandler = require('../utils/asyncHandler');
 // Initialize Razorpay only if keys are present
 let razorpay = null;
 try {
+    console.log('🔧 Checking Razorpay configuration...');
+    console.log('RAZORPAY_KEY_ID exists?', !!process.env.RAZORPAY_KEY_ID);
+    console.log('RAZORPAY_KEY_SECRET exists?', !!process.env.RAZORPAY_KEY_SECRET);
+    
     if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
         const Razorpay = require('razorpay');
         razorpay = new Razorpay({
-            key_id: process.env.RAZORPAY_KEY_ID,
-            key_secret: process.env.RAZORPAY_KEY_SECRET
+            key_id: process.env.RAZORPAY_KEY_ID.trim(),
+            key_secret: process.env.RAZORPAY_KEY_SECRET.trim()
         });
-        console.log('✅ Razorpay initialized');
+        console.log('✅ Razorpay initialized successfully');
+        console.log('✅ Razorpay Key ID:', process.env.RAZORPAY_KEY_ID.trim());
     } else {
         console.warn('⚠️ Razorpay keys missing. Payment features will be disabled.');
+        console.warn('Make sure RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are set in .env');
     }
 } catch (err) {
     console.error('❌ Failed to initialize Razorpay:', err.message);
+    console.error('❌ Full error:', err);
 }
 
 const getCommission = async () => {
@@ -33,10 +40,15 @@ const getCommission = async () => {
 // @route   POST /api/v1/payments/create-order
 exports.createOrder = asyncHandler(async (req, res) => {
     if (!razorpay) {
-        throw new ApiError(503, 'Payment service is not configured. Please contact support.');
+        console.error('❌ Razorpay not initialized. Check your API keys.');
+        throw new ApiError(503, 'Payment service is not configured. Please contact support. (Razorpay not initialized)');
     }
     
     const { bookingId } = req.body;
+    
+    if (!bookingId) {
+        throw new ApiError(400, 'Booking ID is required');
+    }
     
     const booking = await Booking.findById(bookingId);
     if (!booking) throw new ApiError(404, 'Booking not found');
@@ -55,24 +67,32 @@ exports.createOrder = asyncHandler(async (req, res) => {
         }
     };
     
-    const order = await razorpay.orders.create(options);
+    console.log('🔄 Creating Razorpay order with options:', options);
     
-    await Payment.create({
-        booking: booking._id,
-        customer: req.user._id,
-        provider: booking.provider,
-        amount: booking.pricing.total,
-        razorpayOrderId: order.id,
-        receipt: order.receipt,
-        commission: { percentage: 0, amount: 0, providerEarning: 0 }
-    });
-    
-    new ApiResponse(200, {
-        orderId: order.id,
-        amount: order.amount,
-        currency: order.currency,
-        bookingId: booking._id
-    }, 'Order created').send(res);
+    try {
+        const order = await razorpay.orders.create(options);
+        console.log('✅ Razorpay order created:', order.id);
+        
+        await Payment.create({
+            booking: booking._id,
+            customer: req.user._id,
+            provider: booking.provider,
+            amount: booking.pricing.total,
+            razorpayOrderId: order.id,
+            receipt: order.receipt,
+            commission: { percentage: 0, amount: 0, providerEarning: 0 }
+        });
+        
+        new ApiResponse(200, {
+            orderId: order.id,
+            amount: order.amount,
+            currency: order.currency,
+            bookingId: booking._id
+        }, 'Order created').send(res);
+    } catch (razorpayError) {
+        console.error('❌ Razorpay order creation failed:', razorpayError);
+        throw new ApiError(500, 'Failed to create payment order: ' + razorpayError.message);
+    }
 });
 
 // @desc    Verify payment + credit provider wallet after commission
@@ -84,14 +104,19 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
     
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        throw new ApiError(400, 'Missing payment verification parameters');
+    }
+    
     const crypto = require('crypto');
     const sign = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSign = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET.trim())
         .update(sign.toString())
         .digest('hex');
     
     if (expectedSign !== razorpay_signature) {
+        console.error('❌ Invalid payment signature. Expected:', expectedSign, 'Got:', razorpay_signature);
         throw new ApiError(400, 'Invalid payment signature');
     }
     
@@ -143,6 +168,13 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     });
     await wallet.save();
     
+    console.log('✅ Payment verified and wallet credited:', {
+        bookingId: booking.bookingId,
+        amount: totalAmount,
+        providerEarning,
+        commissionAmount
+    });
+    
     new ApiResponse(200, { payment, wallet, booking }, 'Payment verified & wallet credited').send(res);
 });
 
@@ -150,13 +182,19 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/payments/webhook
 exports.webhook = asyncHandler(async (req, res) => {
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    
+    if (!secret) {
+        console.warn('⚠️ RAZORPAY_WEBHOOK_SECRET not set, skipping signature verification');
+        return res.status(200).json({ status: 'ok' });
+    }
+    
     const crypto = require('crypto');
     const shasum = crypto.createHmac('sha256', secret);
     shasum.update(JSON.stringify(req.body));
     const digest = shasum.digest('hex');
     
     if (digest !== req.headers['x-razorpay-signature']) {
-        console.warn('Invalid webhook signature');
+        console.warn('❌ Invalid webhook signature');
         return res.status(400).json({ status: 'invalid signature' });
     }
     
