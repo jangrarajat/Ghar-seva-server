@@ -6,6 +6,9 @@ const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendEmail, emailTemplates } = require('../utils/sendEmail');
 
+// Helper function to round to 2 decimal places
+const roundTo2 = (num) => Math.round(num * 100) / 100;
+
 // @desc    Create new booking
 // @route   POST /api/v1/bookings
 exports.createBooking = asyncHandler(async (req, res) => {
@@ -42,18 +45,21 @@ exports.createBooking = asyncHandler(async (req, res) => {
             service: service._id,
             serviceName: service.name,
             quantity: item.quantity || 1,
-            unitPrice,
-            totalPrice,
+            unitPrice: roundTo2(unitPrice),
+            totalPrice: roundTo2(totalPrice),
             notes: item.notes
         });
 
         subtotal += totalPrice;
     }
 
-    const gst = subtotal * 0.09; 
-    const sgst = subtotal * 0.09; 
-    const convenienceFee = subtotal * 0.05; 
-    const total = subtotal + gst + sgst + convenienceFee;
+    // ✅ Round to 2 decimal places
+    subtotal = roundTo2(subtotal);
+    
+    const gst = roundTo2(subtotal * 0.09);
+    const sgst = roundTo2(subtotal * 0.09);
+    const convenienceFee = roundTo2(subtotal * 0.05);
+    const total = roundTo2(subtotal + gst + sgst + convenienceFee);
 
     const finalBookingId = bookingId || `BK-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
@@ -357,8 +363,6 @@ exports.generateCompletionOTP = asyncHandler(async (req, res) => {
         console.log(`OTP email sent to ${customerEmail}`);
     } catch (emailErr) {
         console.error('Failed to send OTP email:', emailErr);
-        // We don't throw an error to the provider if email fails, but we log it.
-        // The provider still sees the OTP in the modal (fallback)
     }
 
     new ApiResponse(200, { message: 'OTP generated and sent to customer email', otp }, 'OTP generated').send(res);

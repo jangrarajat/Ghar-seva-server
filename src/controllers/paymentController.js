@@ -7,6 +7,9 @@ const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
 
+// Helper function to round to 2 decimal places
+const roundTo2 = (num) => Math.round(num * 100) / 100;
+
 // Initialize Razorpay only if keys are present
 let razorpay = null;
 try {
@@ -54,7 +57,9 @@ exports.createOrder = asyncHandler(async (req, res) => {
     if (!booking) throw new ApiError(404, 'Booking not found');
     if (booking.payment.status === 'paid') throw new ApiError(400, 'Payment already completed');
     
-    const amount = Math.round(booking.pricing.total * 100); // paise
+    // ✅ Round to 2 decimal places then convert to paise
+    const roundedTotal = roundTo2(booking.pricing.total);
+    const amount = Math.round(roundedTotal * 100); // paise
     
     const options = {
         amount,
@@ -77,7 +82,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
             booking: booking._id,
             customer: req.user._id,
             provider: booking.provider,
-            amount: booking.pricing.total,
+            amount: roundedTotal,
             razorpayOrderId: order.id,
             receipt: order.receipt,
             commission: { percentage: 0, amount: 0, providerEarning: 0 }
@@ -134,8 +139,10 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     
     const commissionPercentage = await getCommission();
     const totalAmount = payment.amount;
-    const commissionAmount = (totalAmount * commissionPercentage) / 100;
-    const providerEarning = totalAmount - commissionAmount;
+    
+    // ✅ Round to 2 decimal places
+    const commissionAmount = roundTo2((totalAmount * commissionPercentage) / 100);
+    const providerEarning = roundTo2(totalAmount - commissionAmount);
     
     payment.commission = {
         percentage: commissionPercentage,
@@ -158,8 +165,8 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     // Credit provider wallet
     let wallet = await Wallet.findOne({ user: payment.provider });
     if (!wallet) wallet = await Wallet.create({ user: payment.provider });
-    wallet.balance += providerEarning;
-    wallet.totalEarnings += providerEarning;
+    wallet.balance = roundTo2(wallet.balance + providerEarning);
+    wallet.totalEarnings = roundTo2(wallet.totalEarnings + providerEarning);
     wallet.transactions.push({
         type: 'credit',
         amount: providerEarning,
