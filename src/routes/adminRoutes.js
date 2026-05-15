@@ -1,3 +1,5 @@
+// routes/adminRoutes.js
+
 const express = require('express');
 const { body, query } = require('express-validator');
 const adminController = require('../controllers/adminController');
@@ -29,6 +31,11 @@ router.patch('/users/:id/status',
 
 // Provider Management
 router.get('/providers', adminController.getAllProviders);
+
+// KYC Verification Routes
+router.get('/verifications', adminController.getVerificationRequests);
+router.patch('/verifications/:id', adminController.verifyProviderKYC);
+router.get('/providers/:id/documents', adminController.getProviderDocuments);
 
 // Category Management
 router.get('/categories', adminController.getAllCategories);

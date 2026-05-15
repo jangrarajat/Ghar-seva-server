@@ -1,3 +1,5 @@
+// controllers/adminController.js
+
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const ServiceProvider = require('../models/ServiceProvider');
@@ -6,6 +8,7 @@ const SubService = require('../models/SubService');
 const Payment = require('../models/Payment');
 const WithdrawalRequest = require('../models/WithdrawalRequest');
 const Settings = require('../models/Settings');
+const Notification = require('../models/Notification');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -271,7 +274,15 @@ exports.getUserDetails = asyncHandler(async (req, res) => {
 // @desc    Update user status
 // @route   PATCH /api/v1/admin/users/:id/status
 exports.updateUserStatus = asyncHandler(async (req, res) => {
-    const { status } = req.body;
+    const { status } = req.body || {};
+    
+    if (!status) {
+        throw new ApiError(400, 'Status is required');
+    }
+    
+    if (!['active', 'inactive', 'suspended'].includes(status)) {
+        throw new ApiError(400, 'Invalid status. Allowed: active, inactive, suspended');
+    }
     
     const user = await User.findByIdAndUpdate(
         req.params.id,
@@ -280,6 +291,20 @@ exports.updateUserStatus = asyncHandler(async (req, res) => {
     ).select('-password');
     
     if (!user) throw new ApiError(404, 'User not found');
+
+    // Create notification for user
+    const notificationTitle = status === 'active' ? 'Account Activated' : 'Account Suspended';
+    const notificationMessage = status === 'active' 
+        ? 'Your account has been activated. You can now access all features.'
+        : 'Your account has been suspended. Please contact support for more information.';
+
+    await Notification.create({
+        recipient: user._id,
+        type: 'system',
+        title: notificationTitle,
+        message: notificationMessage,
+        channels: { inApp: true, email: true }
+    });
 
     new ApiResponse(200, { user }, 'User status updated successfully').send(res);
 });
@@ -310,6 +335,193 @@ exports.getAllProviders = asyncHandler(async (req, res) => {
             pages: Math.ceil(total / limit)
         }
     }, 'Providers fetched successfully').send(res);
+});
+
+// @desc    Get all verification requests (ALL providers - pending, verified, rejected, suspended)
+// @route   GET /api/v1/admin/verifications
+exports.getVerificationRequests = asyncHandler(async (req, res) => {
+    const { page = 1, limit = 20, status, accountStatus } = req.query;
+    
+    const query = {};
+    
+    // Filter by KYC verification status (pending, under_review, verified, rejected)
+    if (status && status !== 'all') {
+        query.verificationStatus = status;
+    }
+    // If no status filter, get ALL providers (no restriction)
+    
+    const providers = await ServiceProvider.find(query)
+        .populate('user', 'firstName lastName email phone avatar status')
+        .sort('-createdAt')
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit));
+    
+    // Filter by account status if provided
+    let filteredProviders = providers;
+    if (accountStatus && accountStatus !== 'all') {
+        filteredProviders = providers.filter(provider => provider.user?.status === accountStatus);
+    }
+    
+    const verifications = filteredProviders.map(provider => ({
+        _id: provider._id,
+        businessName: provider.businessName,
+        user: provider.user,
+        documents: provider.documents || [],
+        verificationStatus: provider.verificationStatus,
+        verificationNote: provider.verificationNote,
+        createdAt: provider.createdAt,
+        experience: provider.experience,
+        serviceArea: provider.serviceArea,
+        bankDetails: provider.bankDetails
+    }));
+    
+    new ApiResponse(200, {
+        verifications,
+        pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total: verifications.length,
+            pages: Math.ceil(verifications.length / limit)
+        }
+    }, 'Verification requests fetched successfully').send(res);
+});
+
+// @desc    Verify or reject provider KYC - WITH PROPER DOCUMENT VALIDATION
+// @route   PATCH /api/v1/admin/verifications/:id
+exports.verifyProviderKYC = asyncHandler(async (req, res) => {
+    const { status, note } = req.body || {};
+    
+    if (!status) {
+        throw new ApiError(400, 'Status is required');
+    }
+    
+    if (!['verified', 'rejected', 'under_review'].includes(status)) {
+        throw new ApiError(400, 'Invalid status. Allowed: verified, rejected, under_review');
+    }
+    
+    const provider = await ServiceProvider.findById(req.params.id);
+    if (!provider) {
+        throw new ApiError(404, 'Provider not found');
+    }
+    
+    // ✅ Check if provider has uploaded at least one document
+    const hasAadhaar = provider.documents.some(doc => doc.type === 'aadhar');
+    const hasPAN = provider.documents.some(doc => doc.type === 'pan');
+    
+    // Determine which documents are uploaded
+    const uploadedDocs = [];
+    if (hasAadhaar) uploadedDocs.push('Aadhaar Card');
+    if (hasPAN) uploadedDocs.push('PAN Card');
+    
+    let notificationTitle = '';
+    let notificationMessage = '';
+    
+    if (status === 'verified') {
+        // ✅ If trying to verify, check if at least one document is uploaded
+        if (!hasAadhaar && !hasPAN) {
+            throw new ApiError(400, 'Cannot verify: Provider has not uploaded any documents');
+        }
+        
+        // If only Aadhaar is uploaded (no PAN)
+        if (hasAadhaar && !hasPAN) {
+            notificationTitle = 'KYC Partially Verified';
+            notificationMessage = `Your Aadhaar card has been verified. However, PAN card is pending. Please upload PAN card for full verification. You can now start accepting bookings with limited access.`;
+            provider.verificationStatus = 'verified';
+            provider.verificationNote = 'Partially verified - Aadhaar verified, PAN pending';
+        }
+        // If both documents are uploaded
+        else if (hasAadhaar && hasPAN) {
+            notificationTitle = 'KYC Fully Verified';
+            notificationMessage = `Your documents (${uploadedDocs.join(' and ')}) have been verified. You can now start accepting bookings.`;
+            provider.verificationStatus = 'verified';
+            provider.verificationNote = 'Fully verified - All documents verified';
+        }
+        // If only PAN is uploaded (no Aadhaar)
+        else if (!hasAadhaar && hasPAN) {
+            notificationTitle = 'KYC Partially Verified';
+            notificationMessage = `Your PAN card has been verified. However, Aadhaar card is pending. Please upload Aadhaar card for full verification. You can now start accepting bookings with limited access.`;
+            provider.verificationStatus = 'verified';
+            provider.verificationNote = 'Partially verified - PAN verified, Aadhaar pending';
+        }
+        
+        provider.verifiedAt = new Date();
+        
+        // Mark only uploaded documents as verified
+        provider.documents.forEach(doc => {
+            if (doc.type === 'aadhar' || doc.type === 'pan') {
+                doc.isVerified = true;
+                doc.verifiedAt = new Date();
+                doc.verifiedBy = req.user._id;
+            }
+        });
+        
+        await User.findByIdAndUpdate(provider.user, { role: 'provider' });
+        
+    } else if (status === 'rejected') {
+        provider.verificationStatus = 'rejected';
+        provider.verificationNote = note || 'Your documents were rejected. Please upload clear copies.';
+        provider.verifiedAt = null;
+        
+        notificationTitle = 'KYC Verification Rejected';
+        notificationMessage = `Your KYC verification has been rejected. Reason: ${note || 'Please upload clear and valid documents.'}`;
+        
+    } else if (status === 'under_review') {
+        provider.verificationStatus = 'under_review';
+        provider.verificationNote = note || 'Your documents are under review';
+        
+        notificationTitle = 'KYC Documents Under Review';
+        notificationMessage = `Your uploaded documents (${uploadedDocs.join(', ') || 'None'}) are under review by admin. We will notify you once verified.`;
+    }
+    
+    await provider.save();
+    
+    // Create notification for provider
+    await Notification.create({
+        recipient: provider.user,
+        type: status === 'verified' ? 'profile_verified' : status === 'rejected' ? 'profile_rejected' : 'system',
+        title: notificationTitle,
+        message: notificationMessage,
+        reference: { model: 'ServiceProvider', id: provider._id },
+        channels: { inApp: true, email: true }
+    });
+    
+    new ApiResponse(200, { 
+        provider: {
+            _id: provider._id,
+            verificationStatus: provider.verificationStatus,
+            verificationNote: provider.verificationNote,
+            documents: provider.documents
+        }
+    }, `Provider ${status} successfully`).send(res);
+});
+
+// @desc    Get provider documents for KYC verification
+// @route   GET /api/v1/admin/providers/:id/documents
+exports.getProviderDocuments = asyncHandler(async (req, res) => {
+    const provider = await ServiceProvider.findById(req.params.id)
+        .populate('user', 'firstName lastName email phone');
+    
+    if (!provider) {
+        throw new ApiError(404, 'Provider not found');
+    }
+    
+    const documents = {
+        aadhar: provider.documents?.find(doc => doc.type === 'aadhar') || null,
+        pan: provider.documents?.find(doc => doc.type === 'pan') || null,
+        driving_license: provider.documents?.find(doc => doc.type === 'driving_license') || null,
+        certificate: provider.documents?.find(doc => doc.type === 'certificate') || null,
+        other: provider.documents?.filter(doc => doc.type === 'other') || []
+    };
+    
+    new ApiResponse(200, {
+        providerId: provider._id,
+        businessName: provider.businessName,
+        user: provider.user,
+        documents,
+        verificationStatus: provider.verificationStatus,
+        verificationNote: provider.verificationNote,
+        createdAt: provider.createdAt
+    }, 'Provider documents fetched').send(res);
 });
 
 // @desc    Get all categories (for admin)
@@ -477,7 +689,11 @@ exports.getAllWithdrawals = asyncHandler(async (req, res) => {
 // @desc    Approve withdrawal request
 // @route   PATCH /api/v1/admin/withdrawals/:id/approve
 exports.approveWithdrawal = asyncHandler(async (req, res) => {
-    const { transactionId, adminNote } = req.body;
+    const { transactionId, adminNote } = req.body || {};
+    
+    if (!transactionId) {
+        throw new ApiError(400, 'Transaction ID is required');
+    }
     
     const withdrawal = await WithdrawalRequest.findById(req.params.id);
     if (!withdrawal) throw new ApiError(404, 'Withdrawal request not found');
@@ -513,7 +729,7 @@ exports.approveWithdrawal = asyncHandler(async (req, res) => {
 // @desc    Reject withdrawal request
 // @route   PATCH /api/v1/admin/withdrawals/:id/reject
 exports.rejectWithdrawal = asyncHandler(async (req, res) => {
-    const { adminNote } = req.body;
+    const { adminNote } = req.body || {};
     
     const withdrawal = await WithdrawalRequest.findById(req.params.id);
     if (!withdrawal) throw new ApiError(404, 'Withdrawal request not found');

@@ -1,9 +1,11 @@
 // controllers/providerController.js
+
 const ServiceProvider = require('../models/ServiceProvider');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const { uploadToCloudinary } = require('../config/cloudinary');
 
 // @desc    Register as service provider
 // @route   POST /api/v1/providers/register
@@ -77,6 +79,11 @@ exports.addService = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Provider profile not found');
     }
     
+    // Check if provider is verified
+    if (provider.verificationStatus !== 'verified') {
+        throw new ApiError(403, 'Please complete KYC verification first to add services');
+    }
+    
     const existingService = provider.services.find(
         s => s.category.toString() === req.body.category
     );
@@ -142,27 +149,183 @@ exports.updateServiceArea = asyncHandler(async (req, res) => {
     new ApiResponse(200, { serviceArea: provider.serviceArea }, 'Service area updated').send(res);
 });
 
-// @desc    Upload documents
-// @route   POST /api/v1/providers/documents
-exports.uploadDocuments = asyncHandler(async (req, res) => {
-    const provider = await ServiceProvider.findOne({ user: req.user._id });
+// @desc    Upload KYC documents with Multer (Aadhaar front, Aadhaar back, PAN)
+// @route   POST /api/v1/providers/upload-kyc
+exports.uploadKYCDocuments = asyncHandler(async (req, res) => {
+    console.log('========== UPLOAD KYC DOCUMENTS ==========');
+    console.log('Files received:', req.files);
+    console.log('Body received:', req.body);
     
+    const { aadharNumber, panNumber } = req.body;
+    
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
     if (!provider) {
         throw new ApiError(404, 'Provider profile not found');
     }
     
-    const { type, documentNumber, url, publicId } = req.body;
+    // Get uploaded files from multer
+    const files = req.files || {};
     
-    provider.documents.push({
-        type,
-        documentNumber,
-        frontImage: { url, publicId }
-    });
+    // Upload Aadhaar front
+    if (files.aadharFront && files.aadharFront[0]) {
+        console.log('Uploading Aadhaar front...');
+        const result = await uploadToCloudinary(files.aadharFront[0].buffer, 'gharseva/kyc-documents');
+        console.log('Aadhaar front uploaded:', result.secure_url);
+        
+        const existingAadhar = provider.documents.find(doc => doc.type === 'aadhar');
+        if (existingAadhar) {
+            existingAadhar.frontImage = {
+                url: result.secure_url,
+                publicId: result.public_id
+            };
+            existingAadhar.documentNumber = aadharNumber || existingAadhar.documentNumber;
+            existingAadhar.isVerified = false;
+            existingAadhar.verifiedAt = null;
+            existingAadhar.verifiedBy = null;
+        } else {
+            provider.documents.push({
+                type: 'aadhar',
+                documentNumber: aadharNumber,
+                frontImage: {
+                    url: result.secure_url,
+                    publicId: result.public_id
+                },
+                isVerified: false
+            });
+        }
+    }
     
-    provider.verificationStatus = 'under_review';
+    // Upload Aadhaar back
+    if (files.aadharBack && files.aadharBack[0]) {
+        console.log('Uploading Aadhaar back...');
+        const result = await uploadToCloudinary(files.aadharBack[0].buffer, 'gharseva/kyc-documents');
+        console.log('Aadhaar back uploaded:', result.secure_url);
+        
+        const existingAadhar = provider.documents.find(doc => doc.type === 'aadhar');
+        if (existingAadhar) {
+            existingAadhar.backImage = {
+                url: result.secure_url,
+                publicId: result.public_id
+            };
+        } else {
+            const existingDoc = provider.documents.find(doc => doc.type === 'aadhar');
+            if (existingDoc) {
+                existingDoc.backImage = {
+                    url: result.secure_url,
+                    publicId: result.public_id
+                };
+            }
+        }
+    }
+    
+    // Upload PAN card
+    if (files.panFront && files.panFront[0]) {
+        console.log('Uploading PAN card...');
+        const result = await uploadToCloudinary(files.panFront[0].buffer, 'gharseva/kyc-documents');
+        console.log('PAN card uploaded:', result.secure_url);
+        
+        const existingPan = provider.documents.find(doc => doc.type === 'pan');
+        if (existingPan) {
+            existingPan.frontImage = {
+                url: result.secure_url,
+                publicId: result.public_id
+            };
+            existingPan.documentNumber = panNumber || existingPan.documentNumber;
+            existingPan.isVerified = false;
+            existingPan.verifiedAt = null;
+            existingPan.verifiedBy = null;
+        } else {
+            provider.documents.push({
+                type: 'pan',
+                documentNumber: panNumber,
+                frontImage: {
+                    url: result.secure_url,
+                    publicId: result.public_id
+                },
+                isVerified: false
+            });
+        }
+    }
+    
+    // Set verification status to pending
+    if (provider.verificationStatus === 'rejected' || provider.verificationStatus === 'pending') {
+        provider.verificationStatus = 'pending';
+    }
+    
     await provider.save();
     
-    new ApiResponse(201, { documents: provider.documents }, 'Documents uploaded').send(res);
+    // Create notification for admin
+    const Notification = require('../models/Notification');
+    const adminUsers = await User.find({ role: 'admin' });
+    for (const admin of adminUsers) {
+        await Notification.create({
+            recipient: admin._id,
+            type: 'system',
+            title: 'New KYC Documents Uploaded',
+            message: `${provider.businessName || req.user.fullName} has uploaded KYC documents for verification`,
+            reference: { model: 'ServiceProvider', id: provider._id },
+            channels: { inApp: true, email: true }
+        });
+    }
+    
+    console.log('Documents saved successfully');
+    console.log('=========================================');
+    
+    new ApiResponse(200, { 
+        documents: provider.documents,
+        verificationStatus: provider.verificationStatus
+    }, 'Documents uploaded successfully. Verification pending.').send(res);
+});
+
+// @desc    Get provider verification status
+// @route   GET /api/v1/providers/verification-status
+exports.getVerificationStatus = asyncHandler(async (req, res) => {
+    console.log('Getting verification status for user:', req.user._id);
+    
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
+    if (!provider) {
+        throw new ApiError(404, 'Provider profile not found');
+    }
+    
+    const documents = {
+        aadhar: provider.documents.find(doc => doc.type === 'aadhar') || null,
+        pan: provider.documents.find(doc => doc.type === 'pan') || null
+    };
+    
+    const hasAadhaar = !!documents.aadhar;
+    const hasPAN = !!documents.pan;
+    
+    // Determine if fully verified
+    let isFullyVerified = false;
+    let verificationMessage = '';
+    
+    if (provider.verificationStatus === 'verified') {
+        if (hasAadhaar && hasPAN) {
+            isFullyVerified = true;
+            verificationMessage = 'All your documents are verified. You have full access to all features.';
+        } else if (hasAadhaar && !hasPAN) {
+            verificationMessage = 'Your Aadhaar card is verified. Please upload PAN card for full verification.';
+        } else if (!hasAadhaar && hasPAN) {
+            verificationMessage = 'Your PAN card is verified. Please upload Aadhaar card for full verification.';
+        }
+    } else if (provider.verificationStatus === 'rejected') {
+        verificationMessage = provider.verificationNote || 'Your documents were rejected. Please upload clear copies.';
+    } else if (provider.verificationStatus === 'under_review') {
+        verificationMessage = 'Your documents are under review. Please wait for admin verification.';
+    } else {
+        verificationMessage = 'Please upload your KYC documents to start accepting bookings.';
+    }
+    
+    new ApiResponse(200, {
+        verificationStatus: provider.verificationStatus,
+        verificationNote: provider.verificationNote,
+        isVerified: provider.verificationStatus === 'verified',
+        isFullyVerified,
+        verificationMessage,
+        hasAadhaar,
+        hasPAN,
+        documents
+    }, 'Verification status fetched').send(res);
 });
 
 // @desc    Update bank details
@@ -252,7 +415,7 @@ exports.searchProviders = asyncHandler(async (req, res) => {
     const { 
         latitude, 
         longitude, 
-        radius = 10,      // in km (used only with coordinates)
+        radius = 10,
         service, 
         pincode, 
         city,
@@ -265,19 +428,16 @@ exports.searchProviders = asyncHandler(async (req, res) => {
         isAvailable: true
     };
 
-    // Filter by service category
     if (service) {
         query['services.category'] = service;
     }
 
-    // Determine location filter – priority: coordinates > pincode > city
     let locationFilter = {};
 
-    // Priority 1: If coordinates are provided, use geo‑proximity within radius
     if (latitude && longitude) {
         const lat = parseFloat(latitude);
         const lng = parseFloat(longitude);
-        const maxDistance = parseFloat(radius) * 1000; // km → meters
+        const maxDistance = parseFloat(radius) * 1000;
 
         locationFilter = {
             serviceArea: {
@@ -291,19 +451,15 @@ exports.searchProviders = asyncHandler(async (req, res) => {
             }
         };
     } 
-    // Priority 2: If pincode is provided, match against serviceArea.pincodes array
     else if (pincode) {
         query['serviceArea.pincodes'] = pincode;
     }
-    // Priority 3: If city is provided, match against serviceArea.cities (case‑insensitive)
     else if (city) {
         query['serviceArea.cities'] = { $regex: new RegExp(`^${city}$`, 'i') };
     }
 
-    // Merge location filter
     Object.assign(query, locationFilter);
 
-    // If no location criteria at all, return empty (or you could remove this line to return all)
     if (!latitude && !longitude && !pincode && !city) {
         return new ApiResponse(200, {
             providers: [],

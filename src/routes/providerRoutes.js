@@ -1,9 +1,12 @@
+// routes/providerRoutes.js
+
 const express = require('express');
 const providerController = require('../controllers/providerController');
 const withdrawalController = require('../controllers/withdrawalController');
 const { protect, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const { body } = require('express-validator');
+const { upload } = require('../config/cloudinary');
 
 const router = express.Router();
 
@@ -29,8 +32,20 @@ router.delete('/services/:serviceId', authorize('provider'), providerController.
 
 // Service area & documents
 router.put('/service-area', authorize('provider'), providerController.updateServiceArea);
-router.post('/documents', authorize('provider'), providerController.uploadDocuments);
 router.put('/bank-details', authorize('provider'), providerController.updateBankDetails);
+
+// KYC Document Upload Routes with Multer
+router.post('/upload-kyc',
+    authorize('provider'),
+    upload.fields([
+        { name: 'aadharFront', maxCount: 1 },
+        { name: 'aadharBack', maxCount: 1 },
+        { name: 'panFront', maxCount: 1 }
+    ]),
+    providerController.uploadKYCDocuments
+);
+
+router.get('/verification-status', authorize('provider'), providerController.getVerificationStatus);
 
 // Notifications for provider
 router.get('/notifications', authorize('provider'), providerController.getNotifications);
