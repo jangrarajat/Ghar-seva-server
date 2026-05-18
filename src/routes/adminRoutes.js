@@ -31,6 +31,11 @@ router.patch('/users/:id/status',
 
 // Provider Management
 router.get('/providers', adminController.getAllProviders);
+router.get('/providers/status', adminController.getProviderStatusList);  // ✅ NEW
+
+// ✅ Provider Earnings & Ratings
+router.get('/provider-earnings', adminController.getProviderEarningsList);
+router.get('/provider-earnings/:providerId', adminController.getProviderEarningsDetails);
 
 // KYC Verification Routes
 router.get('/verifications', adminController.getVerificationRequests);

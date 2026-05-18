@@ -17,6 +17,9 @@ router.get('/:id/public', providerController.getPublicProfile);
 // Protected routes (require authentication)
 router.use(protect);
 
+// ✅ Heartbeat endpoint – provider calls this every 30 seconds to stay online
+router.post('/heartbeat', authorize('provider'), providerController.updateHeartbeat);
+
 // Provider registration (customer to provider)
 router.post('/register', authorize('customer'), providerController.registerProvider);
 

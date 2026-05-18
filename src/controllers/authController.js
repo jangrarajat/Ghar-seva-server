@@ -1,3 +1,5 @@
+// controllers/authController.js
+
 const User = require('../models/User');
 const generateTokens = require('../utils/generateToken');
 const ApiError = require('../utils/ApiError');
@@ -14,7 +16,7 @@ const cookieOptions = {
 // @desc    Register user directly
 // @route   POST /api/v1/auth/register
 exports.register = asyncHandler(async (req, res) => {
-    const { firstName, lastName, email, phone, password } = req.body;
+    const { firstName, lastName, email, phone, password, avatarUrl } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ $or: [{ email }, { phone }] });
@@ -22,16 +24,23 @@ exports.register = asyncHandler(async (req, res) => {
         throw new ApiError(400, 'User already exists with this email or phone');
     }
 
-    // Create user
-    const user = await User.create({
+    // Create user data with optional avatar
+    const userData = {
         firstName,
         lastName,
         email,
         phone,
         password,
-        isEmailVerified: true, // email considered verified (no OTP)
+        isEmailVerified: true,
         status: 'active'
-    });
+    };
+    
+    // Add avatar if provided during registration
+    if (avatarUrl) {
+        userData.avatar = { url: avatarUrl, publicId: null };
+    }
+    
+    const user = await User.create(userData);
 
     // Generate tokens
     const tokens = generateTokens(user._id);
@@ -57,7 +66,8 @@ exports.register = asyncHandler(async (req, res) => {
             lastName: user.lastName,
             email: user.email,
             phone: user.phone,
-            role: user.role
+            role: user.role,
+            avatar: user.avatar
         },
         accessToken: tokens.accessToken
     }, 'Registration successful').send(res);
@@ -108,7 +118,8 @@ exports.login = asyncHandler(async (req, res) => {
             lastName: user.lastName,
             email: user.email,
             phone: user.phone,
-            role: user.role
+            role: user.role,
+            avatar: user.avatar
         },
         accessToken: tokens.accessToken
     }, 'Login successful').send(res);
@@ -155,5 +166,131 @@ exports.refreshAccessToken = asyncHandler(async (req, res) => {
         ...cookieOptions,
         maxAge: 15 * 60 * 1000
     });
-    new ApiResponse(200, { message: 'Token refreshed' }, 'Token refreshed').send(res);
+    new ApiResponse(200, { 
+        message: 'Token refreshed',
+        user: {
+            id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phone: user.phone,
+            role: user.role,
+            avatar: user.avatar
+        }
+    }, 'Token refreshed').send(res);
+});
+
+// @desc    Forgot password - send reset link
+// @route   POST /api/v1/auth/forgot-password
+exports.forgotPassword = asyncHandler(async (req, res) => {
+    const { email } = req.body;
+    
+    if (!email) {
+        throw new ApiError(400, 'Email is required');
+    }
+    
+    const user = await User.findOne({ email });
+    if (!user) {
+        // For security, don't reveal that user doesn't exist
+        return new ApiResponse(200, null, 'If your email is registered, you will receive a reset link').send(res);
+    }
+    
+    // Generate reset token
+    const crypto = require('crypto');
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetExpires = Date.now() + 3600000; // 1 hour
+    
+    user.passwordResetToken = resetToken;
+    user.passwordResetExpires = resetExpires;
+    await user.save({ validateBeforeSave: false });
+    
+    // Create reset URL
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+    
+    // Send email
+    const { sendEmail } = require('../utils/sendEmail');
+    try {
+        await sendEmail({
+            email: user.email,
+            subject: 'Password Reset Request',
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #2563eb;">Reset Your Password</h2>
+                    <p>Hello ${user.firstName},</p>
+                    <p>You requested to reset your password. Click the button below to reset it:</p>
+                    <a href="${resetUrl}" style="display: inline-block; background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; margin: 20px 0;">Reset Password</a>
+                    <p>This link will expire in 1 hour.</p>
+                    <p>If you didn't request this, please ignore this email.</p>
+                    <hr style="margin: 20px 0; border-color: #e5e7eb;">
+                    <p style="color: #6b7280; font-size: 12px;">GharSeva - Your trusted home service partner</p>
+                </div>
+            `
+        });
+    } catch (err) {
+        user.passwordResetToken = undefined;
+        user.passwordResetExpires = undefined;
+        await user.save({ validateBeforeSave: false });
+        throw new ApiError(500, 'Failed to send reset email. Please try again.');
+    }
+    
+    new ApiResponse(200, null, 'Password reset link sent to your email').send(res);
+});
+
+// @desc    Reset password with token
+// @route   POST /api/v1/auth/reset-password
+exports.resetPassword = asyncHandler(async (req, res) => {
+    const { token, newPassword } = req.body;
+    
+    if (!token || !newPassword) {
+        throw new ApiError(400, 'Token and new password are required');
+    }
+    
+    if (newPassword.length < 8) {
+        throw new ApiError(400, 'Password must be at least 8 characters');
+    }
+    
+    const user = await User.findOne({
+        passwordResetToken: token,
+        passwordResetExpires: { $gt: Date.now() }
+    });
+    
+    if (!user) {
+        throw new ApiError(400, 'Invalid or expired reset token');
+    }
+    
+    // Update password
+    user.password = newPassword;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+    
+    new ApiResponse(200, null, 'Password reset successfully. Please login with your new password.').send(res);
+});
+
+// @desc    Change password (when logged in)
+// @route   POST /api/v1/auth/change-password
+exports.changePassword = asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+        throw new ApiError(400, 'Current password and new password are required');
+    }
+    
+    if (newPassword.length < 8) {
+        throw new ApiError(400, 'New password must be at least 8 characters');
+    }
+    
+    const user = await User.findById(req.user._id).select('+password');
+    
+    // Verify current password
+    const isPasswordMatch = await user.comparePassword(currentPassword);
+    if (!isPasswordMatch) {
+        throw new ApiError(401, 'Current password is incorrect');
+    }
+    
+    // Update password
+    user.password = newPassword;
+    await user.save();
+    
+    new ApiResponse(200, null, 'Password changed successfully').send(res);
 });

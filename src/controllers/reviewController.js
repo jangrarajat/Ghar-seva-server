@@ -1,3 +1,6 @@
+// controllers/reviewController.js
+
+const mongoose = require('mongoose');  // ✅ IMPORTANT: missing import
 const Review = require('../models/Review');
 const Booking = require('../models/Booking');
 const ServiceProvider = require('../models/ServiceProvider');
@@ -69,9 +72,9 @@ exports.getProviderReviews = asyncHandler(async (req, res) => {
     
     const total = await Review.countDocuments(query);
     
-    // Get rating stats
+    // Get rating stats – FIX: use mongoose.Types.ObjectId correctly
     const stats = await Review.aggregate([
-        { $match: { provider: mongoose.Types.ObjectId(req.params.providerId), status: 'approved' } },
+        { $match: { provider: new mongoose.Types.ObjectId(req.params.providerId), status: 'approved' } },
         {
             $group: {
                 _id: null,
@@ -102,12 +105,8 @@ exports.getProviderReviews = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/reviews/:id/response
 exports.addProviderResponse = asyncHandler(async (req, res) => {
     const review = await Review.findById(req.params.id);
+    if (!review) throw new ApiError(404, 'Review not found');
     
-    if (!review) {
-        throw new ApiError(404, 'Review not found');
-    }
-    
-    // Check if user is the provider
     const provider = await ServiceProvider.findOne({ user: req.user._id });
     if (!provider || provider._id.toString() !== review.provider.toString()) {
         throw new ApiError(403, 'Not authorized to respond to this review');
@@ -117,7 +116,6 @@ exports.addProviderResponse = asyncHandler(async (req, res) => {
         comment: req.body.comment,
         respondedAt: new Date()
     };
-    
     await review.save();
     
     new ApiResponse(200, { review }, 'Response added').send(res);
@@ -127,28 +125,20 @@ exports.addProviderResponse = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/reviews/:id/helpful
 exports.markHelpful = asyncHandler(async (req, res) => {
     const review = await Review.findById(req.params.id);
+    if (!review) throw new ApiError(404, 'Review not found');
     
-    if (!review) {
-        throw new ApiError(404, 'Review not found');
-    }
-    
-    // Check if user already marked
     const alreadyMarked = review.helpful.users.includes(req.user._id);
-    
     if (alreadyMarked) {
-        // Remove vote
         review.helpful.users.pull(req.user._id);
         review.helpful.count--;
     } else {
-        // Add vote
         review.helpful.users.push(req.user._id);
         review.helpful.count++;
     }
-    
     await review.save();
     
-    new ApiResponse(200, { 
+    new ApiResponse(200, {
         helpful: review.helpful,
-        isHelpful: !alreadyMarked 
+        isHelpful: !alreadyMarked
     }, alreadyMarked ? 'Vote removed' : 'Marked as helpful').send(res);
 });

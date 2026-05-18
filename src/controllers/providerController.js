@@ -510,3 +510,16 @@ exports.markNotificationRead = asyncHandler(async (req, res) => {
     if (!notification) throw new ApiError(404, 'Notification not found');
     new ApiResponse(200, { notification }, 'Marked as read').send(res);
 });
+
+// ========== NEW: HEARTBEAT (ONLINE STATUS) ==========
+// @desc    Update provider heartbeat (keeps lastActive timestamp)
+// @route   POST /api/v1/providers/heartbeat
+exports.updateHeartbeat = asyncHandler(async (req, res) => {
+    const provider = await ServiceProvider.findOne({ user: req.user._id });
+    if (!provider) {
+        throw new ApiError(404, 'Provider profile not found');
+    }
+    provider.lastActive = new Date();
+    await provider.save({ validateBeforeSave: false });
+    new ApiResponse(200, { lastActive: provider.lastActive }, 'Heartbeat updated').send(res);
+});

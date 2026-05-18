@@ -1,7 +1,10 @@
+// controllers/userController.js
+
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const { uploadToCloudinary } = require('../config/cloudinary');
 
 // @desc    Update user profile
 // @route   PUT /api/v1/users/profile
@@ -20,12 +23,66 @@ exports.updateProfile = asyncHandler(async (req, res) => {
     new ApiResponse(200, { user }, 'Profile updated successfully').send(res);
 });
 
+// @desc    Upload/Update user avatar
+// @route   POST /api/v1/users/avatar
+exports.uploadAvatar = asyncHandler(async (req, res) => {
+    if (!req.file) {
+        throw new ApiError(400, 'Please upload an image file');
+    }
+    
+    const user = await User.findById(req.user._id);
+    if (!user) {
+        throw new ApiError(404, 'User not found');
+    }
+    
+    // Delete old avatar from Cloudinary if exists
+    if (user.avatar?.publicId) {
+        const cloudinary = require('cloudinary').v2;
+        await cloudinary.uploader.destroy(user.avatar.publicId);
+    }
+    
+    // Upload to Cloudinary
+    const result = await uploadToCloudinary(req.file.buffer, 'gharseva/avatars');
+    
+    // Update user avatar
+    user.avatar = {
+        url: result.secure_url,
+        publicId: result.public_id
+    };
+    
+    await user.save();
+    
+    new ApiResponse(200, { 
+        avatar: user.avatar,
+        message: 'Avatar updated successfully'
+    }, 'Avatar uploaded successfully').send(res);
+});
+
+// @desc    Remove user avatar
+// @route   DELETE /api/v1/users/avatar
+exports.removeAvatar = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+        throw new ApiError(404, 'User not found');
+    }
+    
+    // Delete from Cloudinary
+    if (user.avatar?.publicId) {
+        const cloudinary = require('cloudinary').v2;
+        await cloudinary.uploader.destroy(user.avatar.publicId);
+    }
+    
+    user.avatar = undefined;
+    await user.save();
+    
+    new ApiResponse(200, null, 'Avatar removed successfully').send(res);
+});
+
 // @desc    Add address
 // @route   POST /api/v1/users/addresses
 exports.addAddress = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user._id);
     
-    // If this is the first address or marked as default, unmark others
     if (req.body.isDefault || user.addresses.length === 0) {
         user.addresses.forEach(addr => {
             addr.isDefault = false;
@@ -75,10 +132,8 @@ exports.deleteAddress = asyncHandler(async (req, res) => {
 exports.setDefaultAddress = asyncHandler(async (req, res) => {
     const user = await User.findById(req.user._id);
     
-    // Unmark all as default
     user.addresses.forEach(addr => addr.isDefault = false);
     
-    // Set new default
     const address = user.addresses.id(req.params.addressId);
     if (!address) {
         throw new ApiError(404, 'Address not found');
